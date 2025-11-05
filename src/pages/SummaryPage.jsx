@@ -1,69 +1,141 @@
-import React, { useState } from "react";
+// src/pages/SummaryPage.jsx
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuoteStore } from "../store/quoteStore";
 import { supabase } from "../lib/supabase";
+import { useQuoteStore } from "../store/quoteStore";
+import { money } from "../utils/insurance";
 
 export default function SummaryPage() {
   const navigate = useNavigate();
 
-  // 🔹 pull everything from the store
   const {
     selectedCar,
     selectedVariant,
     selectedRTO,
     selectedAccessories,
     selectedInsurance,
-    selectedExchange,
-    selectedMSME,
-    selectedSolar,
-    selectedCorporate,
   } = useQuoteStore();
 
+  const [addonRows, setAddonRows] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  // ✅ EMI CALCULATOR STATES (added)
   const [showEMI, setShowEMI] = useState(false);
   const [downPayment, setDownPayment] = useState(0);
   const [tenure, setTenure] = useState(36);
   const [interestRate, setInterestRate] = useState(9);
-  const [saving, setSaving] = useState(false);
 
-  // ===================
-  // SCHEMES
-  // ===================
-  const allSchemes = selectedVariant?.schemes || [];
-  const defaults = allSchemes.filter((s) =>
-    ["CONSUMER", "GREEN_BONUS", "INTERVENTION"].includes(s.scheme)
-  );
-  const optionalSchemes = allSchemes.filter((s) =>
-    ["SCRAP", "MSME", "SOLAR", "CORPORATE"].includes(s.scheme)
-  );
+  if (!selectedVariant) {
+    return (
+      <div className="max-w-4xl mx-auto p-6 text-center text-gray-500">
+        Variant is not selected. Please start again.
+      </div>
+    );
+  }
 
   const exShowroom = Number(selectedVariant?.ex_showroom || 0);
-  const defaultDeduction = defaults.reduce(
-    (acc, s) => acc + (s.amount || 0),
-    0
-  );
+  const allSchemes = Array.isArray(selectedVariant?.schemes)
+    ? selectedVariant.schemes
+    : [];
 
-  let optionalTotal = 0;
-  if (selectedExchange)
-    optionalTotal +=
-      optionalSchemes.find((x) => x.scheme === "SCRAP")?.amount || 0;
-  if (selectedMSME)
-    optionalTotal +=
-      optionalSchemes.find((x) => x.scheme === "MSME")?.amount || 0;
-  if (selectedSolar)
-    optionalTotal +=
-      optionalSchemes.find((x) => x.scheme === "SOLAR")?.amount || 0;
-  if (selectedCorporate)
-    optionalTotal +=
-      optionalSchemes.find((x) => x.scheme === "CORPORATE")?.amount || 0;
+  const schemesApplied = useMemo(() => {
+    if (allSchemes.length === 0) {
+      const total = Number(selectedVariant?.scheme_deduction || 0);
+      return { lines: [], total };
+    }
+    const lines = allSchemes
+      .filter((s) => Number(s.amount) > 0)
+      .map((s) => ({
+        code: String(s.scheme || "").toUpperCase(),
+        label: String(s.scheme || "").replace(/_/g, " "),
+        amount: Number(s.amount || 0),
+        apply_default: !!s.apply_default,
+      }));
+    const total = lines.reduce((acc, s) => acc + s.amount, 0);
+    return { lines, total };
+  }, [allSchemes, selectedVariant?.scheme_deduction]);
 
-  const priceAfterSchemes = exShowroom - defaultDeduction - optionalTotal;
+  const priceAfterSchemes = Math.max(0, exShowroom - schemesApplied.total);
 
-  // ===================
-  // RTO / Insurance / Accessories Totals
-  // ===================
   const rtoTotal = Number(selectedRTO?.total || 0);
-  const insuranceTotal = Number(selectedInsurance?.total || 0);
-  const accessoriesTotal = (selectedAccessories || []).reduce(
+
+  const rtoLines = [
+    ["Registration Type", selectedRTO?.reg_type ?? "—"],
+    ["New Registration", money(selectedRTO?.new_registration || 0)],
+    ["Hypothecation Addition", money(selectedRTO?.hypothecation_addition || 0)],
+    ["Duplicate Tax Card", money(selectedRTO?.duplicate_tax_card || 0)],
+    ["MV Tax", money(selectedRTO?.mv_tax || 0)],
+    ["Surcharge on MV Tax", money(selectedRTO?.surcharge_mv_tax || 0)],
+    ["Green Tax", money(selectedRTO?.green_tax || 0)],
+    ["Rebate / Waiver", String(selectedRTO?.rebate_waiver ?? "—")],
+  ];
+
+  const ins = selectedInsurance || {};
+  const idv = Number(ins?.idv || 0);
+  const odPremium = Number(ins?.odPremium || 0);
+  const discountPercent = Number(ins?.discount_percent || 0);
+  const discountAmount = Math.max(0, odPremium - Number(ins?.netOD || 0));
+  const netOD = Number(ins?.netOD || 0);
+  const tpPremium = Number(ins?.tp || 0);
+  const computedGST = (netOD + Number(ins?.addonTotal || 0)) * 0.18;
+  const gst = Number.isFinite(Number(ins?.gst)) ? Number(ins?.gst) : computedGST;
+
+  useEffect(() => {
+    async function loadAddons() {
+      try {
+        if (
+          !ins?.company_id ||
+          !ins?.tpTypeId ||
+          !Array.isArray(ins?.selectedAddons) ||
+          ins.selectedAddons.length === 0
+        ) {
+          setAddonRows([]);
+          return;
+        }
+
+        const { data: names } = await supabase
+          .from("insurance_addon")
+          .select("id,name")
+          .in("id", ins.selectedAddons);
+
+        const { data: rates } = await supabase
+          .from("insurance_addon_rate")
+          .select("addon_id, percentage")
+          .eq("company_id", ins.company_id)
+          .eq("tp_type_id", ins.tpTypeId)
+          .in("addon_id", ins.selectedAddons);
+
+        const percentByAddon = {};
+        (rates || []).forEach((r) => {
+          percentByAddon[r.addon_id] = Number(r.percentage || 0);
+        });
+
+        const rows = (names || []).map((n) => {
+          const pct = percentByAddon[n.id] ?? 0;
+          const amount = idv * (pct / 100);
+          return { id: n.id, name: n.name, percent: pct, amount };
+        });
+
+        setAddonRows(rows);
+      } catch (err) {
+        console.error("Failed to load addon rows:", err.message);
+        setAddonRows([]);
+      }
+    }
+    loadAddons();
+  }, [ins?.company_id, ins?.tpTypeId, JSON.stringify(ins?.selectedAddons), idv]);
+
+  const addonTotal = addonRows.reduce((s, r) => s + r.amount, 0);
+
+  const insuranceTotal = Number.isFinite(Number(ins?.total))
+    ? Number(ins.total)
+    : netOD + addonTotal + tpPremium + (netOD + addonTotal) * 0.18;
+
+  const accessories = Array.isArray(selectedAccessories)
+    ? selectedAccessories
+    : [];
+
+  const accessoriesTotal = accessories.reduce(
     (sum, a) => sum + Number(a.price || 0),
     0
   );
@@ -71,52 +143,80 @@ export default function SummaryPage() {
   const finalPrice =
     priceAfterSchemes + rtoTotal + insuranceTotal + accessoriesTotal;
 
-  // EMI Calculation
-  const principal = finalPrice - Number(downPayment || 0);
+  // ✅ EMI Calculator Formula
+  const principal = Math.max(0, finalPrice - Number(downPayment || 0));
   const monthlyRate = Number(interestRate) / 100 / 12;
   const emi =
     monthlyRate === 0
-      ? principal / Number(tenure)
-      : (principal * monthlyRate * Math.pow(1 + monthlyRate, tenure)) /
-        (Math.pow(1 + monthlyRate, tenure) - 1);
+      ? principal / Number(tenure || 1)
+      : (principal * monthlyRate * Math.pow(1 + monthlyRate, tenure || 1)) /
+        (Math.pow(1 + monthlyRate, tenure || 1) - 1);
 
-  // Save Quotation
   async function handleSave() {
     const name = prompt("Enter customer name to save quotation:");
     if (!name) return;
 
-    setSaving(true);
-    const { error } = await supabase.from("quote").insert([
-      {
-        customer_name: name,
-        car_id: selectedCar?.id,
-        variant_id: selectedVariant?.id,
-        schemes: {
-          defaults,
-          selectedExchange,
-          selectedMSME,
-          selectedSolar,
-          selectedCorporate,
-        },
-        rto: selectedRTO,
-        insurance: selectedInsurance,
-        accessories: selectedAccessories,
-        total: finalPrice,
+    const payload = {
+      customer_name: name,
+      car_id: selectedCar?.id,
+      variant_id: selectedVariant?.id,
+      ex_showroom: exShowroom,
+      schemes: {
+        lines: schemesApplied.lines,
+        total: schemesApplied.total,
       },
-    ]);
-    setSaving(false);
+      rto: selectedRTO,
+      insurance: {
+        company_id: ins?.company_id,
+        company_name: ins?.company_name,
+        idv,
+        odPremium,
+        discount_percent: discountPercent,
+        discount_amount: discountAmount,
+        netOD,
+        addons: addonRows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          percent: r.percent,
+          amount: Math.round(r.amount),
+        })),
+        addonTotal: Math.round(addonTotal),
+        gst: Math.round(gst),
+        tp: tpPremium,
+        total: Math.round(insuranceTotal),
+        tpTypeId: ins?.tpTypeId,
+        tpTypeName: ins?.tpTypeName,
+      },
+      accessories: accessories.map((a) => ({
+        id: a.id,
+        name: a.name,
+        price: Number(a.price || 0),
+      })),
+      totals: {
+        priceAfterSchemes: Math.round(priceAfterSchemes),
+        rtoTotal: Math.round(rtoTotal),
+        insuranceTotal: Math.round(insuranceTotal),
+        accessoriesTotal: Math.round(accessoriesTotal),
+        grandTotal: Math.round(finalPrice),
+      },
+    };
 
-    if (error) {
-      console.error(error);
-      alert("Error saving quote: " + error.message);
-    } else {
+    try {
+      setSaving(true);
+      const { error } = await supabase.from("quote").insert([payload]);
+      setSaving(false);
+      if (error) throw error;
       alert("Quote saved!");
+    } catch (err) {
+      setSaving(false);
+      alert("Error saving quote: " + err.message);
     }
   }
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-12 grid md:grid-cols-3 gap-8">
-      {/* LEFT SECTION */}
+
+      {/* LEFT: Sections */}
       <div className="md:col-span-2 space-y-6">
         <button
           onClick={() => navigate(-1)}
@@ -125,273 +225,289 @@ export default function SummaryPage() {
           ← Back
         </button>
 
-        <h1 className="text-3xl font-bold mb-8">Your Summary</h1>
+        <h1 className="text-3xl font-bold mb-4">Quotation Summary</h1>
 
-        {/* Car + Variant */}
-        <div className="bg-white shadow rounded-xl p-6">
-          <h2 className="text-xl font-semibold mb-2">Car & Variant</h2>
-          <p className="font-medium">{selectedCar?.name || "—"}</p>
-          <p className="text-sm text-gray-500">{selectedVariant?.name || "—"}</p>
+        {/* ✅ Car + Variant Box */}
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 shadow-sm">
+          <p className="font-semibold text-blue-800 text-lg">
+            {selectedCar?.name || "—"} · {selectedVariant?.name || "—"} ·{" "}
+            {selectedVariant?.fuel_label || "—"} ·{" "}
+            {selectedVariant?.transmission_label || "—"}
+          </p>
         </div>
 
         {/* Schemes */}
         <div className="bg-white shadow rounded-xl p-6">
-          <h2 className="text-xl font-semibold mb-2">Schemes</h2>
-          {defaults.length === 0 &&
-          !selectedExchange &&
-          !selectedMSME &&
-          !selectedSolar &&
-          !selectedCorporate ? (
-            <p className="text-gray-500 text-sm">No current schemes.</p>
+          <h2 className="text-xl font-semibold mb-3">Schemes Applied</h2>
+
+          {schemesApplied.lines.length === 0 ? (
+            <div className="text-sm text-gray-600">
+              No scheme lines provided. Using total scheme deduction.
+              <div className="flex justify-between font-medium mt-2">
+                <span>Total Schemes</span>
+                <span>-{money(schemesApplied.total)}</span>
+              </div>
+            </div>
           ) : (
-            <ul className="text-sm space-y-1">
-              {defaults.map((s) => (
-                <li key={s.scheme} className="flex justify-between">
-                  <span>{s.scheme.replace("_", " ")}</span>
-                  <span>-₹{s.amount.toLocaleString()}</span>
-                </li>
-              ))}
-              {selectedExchange &&
-                optionalSchemes.find((x) => x.scheme === "SCRAP") && (
-                  <li className="flex justify-between">
-                    <span>Exchange / Scrap</span>
+            <>
+              <ul className="text-sm space-y-1">
+                {schemesApplied.lines.map((s) => (
+                  <li key={s.code} className="flex justify-between">
                     <span>
-                      -₹
-                      {optionalSchemes
-                        .find((x) => x.scheme === "SCRAP")
-                        .amount.toLocaleString()}
+                      {s.label}
+                      {s.apply_default ? " (Default)" : ""}
                     </span>
+                    <span>-{money(s.amount)}</span>
                   </li>
-                )}
-              {selectedMSME &&
-                optionalSchemes.find((x) => x.scheme === "MSME") && (
-                  <li className="flex justify-between">
-                    <span>MSME</span>
-                    <span>
-                      -₹
-                      {optionalSchemes
-                        .find((x) => x.scheme === "MSME")
-                        .amount.toLocaleString()}
-                    </span>
-                  </li>
-                )}
-              {selectedSolar &&
-                optionalSchemes.find((x) => x.scheme === "SOLAR") && (
-                  <li className="flex justify-between">
-                    <span>Solar</span>
-                    <span>
-                      -₹
-                      {optionalSchemes
-                        .find((x) => x.scheme === "SOLAR")
-                        .amount.toLocaleString()}
-                    </span>
-                  </li>
-                )}
-              {selectedCorporate &&
-                optionalSchemes.find((x) => x.scheme === "CORPORATE") && (
-                  <li className="flex justify-between">
-                    <span>Corporate</span>
-                    <span>
-                      -₹
-                      {optionalSchemes
-                        .find((x) => x.scheme === "CORPORATE")
-                        .amount.toLocaleString()}
-                    </span>
-                  </li>
-                )}
-            </ul>
+                ))}
+              </ul>
+              <hr className="my-2" />
+              <div className="flex justify-between font-bold">
+                <span>Total Schemes</span>
+                <span>-{money(schemesApplied.total)}</span>
+              </div>
+            </>
           )}
-          <hr className="my-2" />
-          <div className="flex justify-between font-bold">
-            <span>Price after Schemes</span>
-            <span>₹{priceAfterSchemes.toLocaleString()}</span>
+
+          <div className="flex justify-between font-bold mt-2">
+            <span>Ex-Showroom after Schemes</span>
+            <span>{money(priceAfterSchemes)}</span>
           </div>
         </div>
 
         {/* RTO */}
         <div className="bg-white shadow rounded-xl p-6">
-          <h2 className="text-xl font-semibold mb-2">RTO Selection</h2>
+          <h2 className="text-xl font-semibold mb-3">RTO Charges</h2>
           {selectedRTO ? (
-            <ul className="text-sm space-y-1">
-              <li className="flex justify-between">
-                <span>Registration Type</span>
-                <span>{selectedRTO.reg_type}</span>
-              </li>
-              <li className="flex justify-between">
-                <span>New Registration</span>
-                <span>₹{selectedRTO.new_registration || 0}</span>
-              </li>
-              <li className="flex justify-between">
-                <span>Hypothecation Addition</span>
-                <span>₹{selectedRTO.hypothecation_addition || 0}</span>
-              </li>
-              <li className="flex justify-between">
-                <span>Duplicate Tax Card</span>
-                <span>₹{selectedRTO.duplicate_tax_card || 0}</span>
-              </li>
-              <li className="flex justify-between">
-                <span>MV Tax</span>
-                <span>₹{selectedRTO.mv_tax || 0}</span>
-              </li>
-              <li className="flex justify-between">
-                <span>Surcharge on MV Tax</span>
-                <span>₹{selectedRTO.surcharge_mv_tax || 0}</span>
-              </li>
-              <li className="flex justify-between">
-                <span>Rebate / Waiver</span>
-                <span>{selectedRTO.rebate_waiver || "–"}</span>
-              </li>
-              <hr />
-              <li className="flex justify-between font-bold">
-                <span>Total RTO Charges</span>
-                <span>₹{selectedRTO.total || 0}</span>
-              </li>
-            </ul>
+            <>
+              <ul className="text-sm space-y-1">
+                {rtoLines.map(([k, v]) => (
+                  <li key={k} className="flex justify-between">
+                    <span>{k}</span>
+                    <span>{v}</span>
+                  </li>
+                ))}
+              </ul>
+              <hr className="my-2" />
+              <div className="flex justify-between font-bold">
+                <span>Total RTO</span>
+                <span>{money(rtoTotal)}</span>
+              </div>
+            </>
           ) : (
-            <p className="text-gray-500 text-sm">No RTO selected</p>
+            <p className="text-sm text-gray-500">No RTO selection.</p>
           )}
         </div>
 
         {/* Insurance */}
         <div className="bg-white shadow rounded-xl p-6">
-          <h2 className="text-xl font-semibold mb-2">Insurance</h2>
+          <h2 className="text-xl font-semibold mb-3">Insurance Breakdown</h2>
           {selectedInsurance ? (
-            <div className="text-sm space-y-1">
-              <div className="flex justify-between">
-                <span>Insurer</span>
-                <span>{selectedInsurance.insurer_name}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Basic Premium</span>
-                <span>₹{selectedInsurance.basic_premium}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Third Party Liability</span>
-                <span>₹{selectedInsurance.third_party_liability}</span>
-              </div>
-              {(selectedInsurance.addons || []).map((a, idx) => (
-                <div key={idx} className="flex justify-between">
-                  <span>{a.label}</span>
-                  <span>+₹{a.amount}</span>
+            <>
+              <div className="text-sm mb-2">
+                <div className="flex justify-between">
+                  <span>Insurer</span>
+                  <span>{ins.company_name || "—"}</span>
                 </div>
-              ))}
-              <hr />
-              <div className="flex justify-between font-bold">
-                <span>Total Insurance Premium</span>
-                <span>₹{selectedInsurance.total}</span>
+                <div className="flex justify-between">
+                  <span>IDV</span>
+                  <span>{money(idv)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>OD Premium</span>
+                  <span>{money(odPremium)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Less Discount</span>
+                  <span>
+                    {discountPercent}% ({money(discountAmount)})
+                  </span>
+                </div>
+                <div className="flex justify-between font-medium">
+                  <span>Net OD</span>
+                  <span>{money(netOD)}</span>
+                </div>
               </div>
-            </div>
+
+              {/* Add-ons */}
+              <div className="mt-3">
+                <div className="font-semibold mb-2">Add-ons</div>
+                {addonRows.length === 0 ? (
+                  <div className="text-sm text-gray-500">
+                    No add-ons selected.
+                  </div>
+                ) : (
+                  <ul className="text-sm space-y-1">
+                    {addonRows.map((r) => (
+                      <li key={r.id} className="flex justify-between">
+                        <span>
+                          {r.name}{" "}
+                          <span className="text-gray-500">
+                            ({r.percent}% of IDV)
+                          </span>
+                        </span>
+                        <span>+{money(r.amount)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="flex justify-between font-medium mt-2">
+                  <span>Total Add-ons</span>
+                  <span>{money(addonTotal)}</span>
+                </div>
+
+                <div className="flex justify-between mt-1">
+                  <span>GST @ 18% on (Net OD + Add-ons)</span>
+                  <span>{money(gst)}</span>
+                </div>
+
+                <div className="flex justify-between mt-1">
+                  <span>TP Premium</span>
+                  <span>{money(tpPremium)}</span>
+                </div>
+
+                <hr className="my-2" />
+                <div className="flex justify-between font-bold text-blue-700">
+                  <span>Total Insurance Premium</span>
+                  <span>{money(insuranceTotal)}</span>
+                </div>
+              </div>
+            </>
           ) : (
-            <p className="text-gray-500 text-sm">No Insurance selected</p>
+            <p className="text-sm text-gray-500">No insurance selected.</p>
           )}
         </div>
 
         {/* Accessories */}
         <div className="bg-white shadow rounded-xl p-6">
-          <h2 className="text-xl font-semibold mb-2">Accessories</h2>
-          {(selectedAccessories || []).length > 0 ? (
-            <ul className="text-sm">
-              {selectedAccessories.map((acc) => (
-                <li
-                  key={acc.id}
-                  className="flex justify-between border-b py-1 text-xs"
-                >
-                  <span>{acc.name}</span>
-                  <span>₹{Number(acc.price || 0).toLocaleString()}</span>
-                </li>
-              ))}
-              <hr />
-              <li className="flex justify-between font-bold">
-                <span>Total Accessories</span>
-                <span>₹{accessoriesTotal.toLocaleString()}</span>
-              </li>
-            </ul>
+          <h2 className="text-xl font-semibold mb-3">Accessories</h2>
+          {accessories.length === 0 ? (
+            <p className="text-sm text-gray-500">No accessories selected.</p>
           ) : (
-            <p className="text-gray-500 text-sm">No Accessories selected</p>
+            <>
+              <ul className="text-sm">
+                {accessories.map((a) => (
+                  <li key={a.id} className="flex justify-between py-1">
+                    <span>{a.name}</span>
+                    <span>{money(a.price || 0)}</span>
+                  </li>
+                ))}
+              </ul>
+              <hr className="my-2" />
+              <div className="flex justify-between font-bold">
+                <span>Total Accessories</span>
+                <span>{money(accessoriesTotal)}</span>
+              </div>
+            </>
           )}
         </div>
       </div>
 
-      {/* RIGHT CARD (sticky) */}
+      {/* RIGHT Sidebar */}
       <div className="md:col-span-1">
         <div className="sticky top-6 bg-white shadow rounded-xl p-6 h-fit space-y-4">
-          <h2 className="text-2xl font-bold mb-4">Final Price</h2>
+          <h2 className="text-2xl font-bold">Final Price</h2>
           <ul className="space-y-1 text-sm">
             <li className="flex justify-between">
               <span>Ex-Showroom (after Schemes)</span>
-              <span>₹{priceAfterSchemes.toLocaleString()}</span>
+              <span>{money(priceAfterSchemes)}</span>
             </li>
             <li className="flex justify-between">
               <span>RTO</span>
-              <span>₹{rtoTotal.toLocaleString()}</span>
+              <span>{money(rtoTotal)}</span>
             </li>
             <li className="flex justify-between">
               <span>Insurance</span>
-              <span>₹{insuranceTotal.toLocaleString()}</span>
+              <span>{money(insuranceTotal)}</span>
             </li>
             <li className="flex justify-between">
               <span>Accessories</span>
-              <span>₹{accessoriesTotal.toLocaleString()}</span>
+              <span>{money(accessoriesTotal)}</span>
             </li>
           </ul>
+
           <hr className="my-3" />
           <p className="text-3xl font-extrabold text-blue-600">
-            ₹{finalPrice.toLocaleString()}
+            {money(finalPrice)}
           </p>
 
+          {/* ✅ EMI Calculator UI */}
           <button
-            onClick={() => setShowEMI(!showEMI)}
+            onClick={() => setShowEMI((v) => !v)}
             className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 py-2 rounded-xl font-medium"
           >
             {showEMI ? "Hide EMI Calculator" : "Calculate EMI"}
           </button>
 
           {showEMI && (
-            <div className="space-y-2 text-sm">
-              <label>
-                Down Payment
-                <input
-                  type="number"
-                  value={downPayment}
-                  onChange={(e) => setDownPayment(e.target.value)}
-                  className="w-full border rounded px-2 py-1"
-                />
-              </label>
-              <label>
-                Tenure (Months)
-                <input
-                  type="number"
-                  value={tenure}
-                  onChange={(e) => setTenure(e.target.value)}
-                  className="w-full border rounded px-2 py-1"
-                />
-              </label>
-              <label>
-                Interest Rate (%)
-                <input
-                  type="number"
-                  value={interestRate}
-                  onChange={(e) => setInterestRate(e.target.value)}
-                  className="w-full border rounded px-2 py-1"
-                />
-              </label>
-              <p className="text-green-700 font-bold">
-                EMI: ₹
-                {emi.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                /month
+            <div className="space-y-3 p-3 border rounded-xl bg-gray-50">
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-sm">
+                  Down Payment
+                  <input
+                    type="number"
+                    min="0"
+                    value={downPayment}
+                    onChange={(e) => setDownPayment(e.target.value)}
+                    className="w-full border rounded px-2 py-1 mt-1"
+                  />
+                </label>
+                <label className="text-sm">
+                  Tenure (months)
+                  <input
+                    type="number"
+                    min="1"
+                    value={tenure}
+                    onChange={(e) => setTenure(e.target.value)}
+                    className="w-full border rounded px-2 py-1 mt-1"
+                  />
+                </label>
+                <label className="text-sm">
+                  Interest Rate (% p.a.)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={interestRate}
+                    onChange={(e) => setInterestRate(e.target.value)}
+                    className="w-full border rounded px-2 py-1 mt-1"
+                  />
+                </label>
+                <label className="text-sm">
+                  Loan Amount
+                  <input
+                    type="text"
+                    disabled
+                    value={money(principal)}
+                    className="w-full border rounded px-2 py-1 mt-1 bg-gray-100"
+                  />
+                </label>
+              </div>
+              <p className="text-green-700 font-bold text-lg text-center">
+                EMI: {money(Math.max(0, Math.round(emi)))} / month
               </p>
             </div>
           )}
 
-          <button
-            disabled={saving}
-            onClick={handleSave}
-            className="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded-xl font-medium"
-          >
-            {saving ? "Saving..." : "Save Quotation"}
-          </button>
+          <div className="grid grid-cols-2 gap-2 pt-2">
+            <button
+              onClick={() => navigate(-1)}
+              className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 py-2 rounded-xl font-medium"
+            >
+              Back
+            </button>
+            <button
+              disabled={saving}
+              onClick={handleSave}
+              className="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded-xl font-medium"
+            >
+              {saving ? "Saving..." : "Save Quote"}
+            </button>
+          </div>
         </div>
       </div>
+
     </div>
   );
 }

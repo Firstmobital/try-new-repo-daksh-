@@ -8,7 +8,6 @@ export default function RtoSelectionPage() {
   const { variantId } = useParams();
   const navigate = useNavigate();
 
-  // Zustand store actions
   const setRTO = useQuoteStore((s) => s.setRTO);
   const setVariant = useQuoteStore((s) => s.setVariant);
   const selectedVariant = useQuoteStore((s) => s.selectedVariant);
@@ -16,14 +15,14 @@ export default function RtoSelectionPage() {
   const [rtoOptions, setRtoOptions] = useState([]);
   const [selectedRegType, setSelectedRegType] = useState(null);
 
+  const TRANSFER_CHARGE = 200;
+
   useEffect(() => {
     if (variantId) {
-      // fetch RTO options
       getRtoBreakdown(variantId)
         .then(setRtoOptions)
         .catch(console.error);
 
-      // fetch variant if not already in store
       if (!selectedVariant || selectedVariant.id !== variantId) {
         getVariant(variantId)
           .then(setVariant)
@@ -32,32 +31,46 @@ export default function RtoSelectionPage() {
     }
   }, [variantId]);
 
+  /* ✅ Updated Total Calculation */
+  const computeTotal = (rto) =>
+    Number(rto.new_registration || 0) +
+    Number(rto.hypothecation_addition || 0) +
+    Number(rto.duplicate_tax_card || 0) +
+    Number(rto.mv_tax || 0) +
+    Number(rto.surcharge_mv_tax || 0) +
+    Number(rto.green_tax || 0) - // ✅ Added
+    Number(rto.rebate_waiver || 0);
+
   const handleSelectRTO = (rto) => {
+    const total = computeTotal(rto);
     setSelectedRegType(rto.reg_type);
-
-    // compute total of all items in RTO breakdown
-    const totalRto =
-      Number(rto.new_registration || 0) +
-      Number(rto.hypothecation_addition || 0) +
-      Number(rto.duplicate_tax_card || 0) +
-      Number(rto.mv_tax || 0) +
-      Number(rto.surcharge_mv_tax || 0) -
-      Number(rto.rebate_waiver || 0);
-
-    // Save into Zustand
     setRTO({
       reg_type: rto.reg_type,
       ...rto,
-      total: totalRto,
+      total,
     });
+    navigate(`/insurance/${variantId}`);
+  };
 
-    // Navigate to Insurance page
+  const handleSelectTransfer = () => {
+    setSelectedRegType("Transfer");
+    setRTO({
+      reg_type: "Transfer",
+      new_registration: 0,
+      hypothecation_addition: 0,
+      duplicate_tax_card: 0,
+      mv_tax: 0,
+      surcharge_mv_tax: 0,
+      green_tax: 0, // ✅ Ensure consistent object
+      rebate_waiver: 0,
+      transfer_charge: TRANSFER_CHARGE,
+      total: TRANSFER_CHARGE,
+    });
     navigate(`/insurance/${variantId}`);
   };
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-12">
-      {/* Back button */}
       <button
         onClick={() => navigate(-1)}
         className="mb-6 bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded-xl font-medium"
@@ -72,69 +85,97 @@ export default function RtoSelectionPage() {
       )}
 
       <div className="grid md:grid-cols-4 gap-6">
-        {rtoOptions.map((rto, idx) => (
-          <div
-            key={idx}
-            className={`bg-white rounded-xl shadow-md hover:shadow-xl transition p-6 flex flex-col justify-between border-2 ${
-              selectedRegType === rto.reg_type
-                ? "border-blue-600"
-                : "border-transparent"
-            }`}
-          >
-            <h2 className="text-xl font-semibold mb-4 capitalize">
-              {rto.reg_type}
-            </h2>
-
-            <div className="space-y-1 text-sm">
-              <div className="flex justify-between">
-                <span>New Registration</span>
-                <span>
-                  {rto.new_registration ? `₹${rto.new_registration}` : "–"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Hypothecation Addition</span>
-                <span>
-                  {rto.hypothecation_addition
-                    ? `₹${rto.hypothecation_addition}`
-                    : "–"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Duplicate Tax Card</span>
-                <span>
-                  {rto.duplicate_tax_card
-                    ? `₹${rto.duplicate_tax_card}`
-                    : "–"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>MV Tax</span>
-                <span>{rto.mv_tax ? `₹${rto.mv_tax}` : "–"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Surcharge on MV Tax</span>
-                <span>
-                  {rto.surcharge_mv_tax ? `₹${rto.surcharge_mv_tax}` : "–"}
-                </span>
-              </div>
-              <div className="flex justify-between font-medium text-green-700">
-                <span>Rebate / Waiver</span>
-                <span>
-                  {rto.rebate_waiver ? `₹${rto.rebate_waiver}` : "–"}
-                </span>
-              </div>
-            </div>
-
-            <button
-              onClick={() => handleSelectRTO(rto)}
-              className="mt-6 bg-blue-600 hover:bg-blue-700 text-white w-full py-2 rounded-xl font-medium"
+        {rtoOptions.map((rto, idx) => {
+          const total = computeTotal(rto);
+          return (
+            <div
+              key={idx}
+              className={`bg-white rounded-xl shadow-md hover:shadow-xl transition p-6 flex flex-col justify-between min-h-[350px] border-2 ${
+                selectedRegType === rto.reg_type
+                  ? "border-blue-600"
+                  : "border-transparent"
+              }`}
             >
-              Select & Continue
-            </button>
+              <h2 className="text-xl font-semibold mb-4 capitalize">
+                {rto.reg_type}
+              </h2>
+
+              <div className="space-y-1 text-sm flex-1">
+                <Row label="New Registration" value={rto.new_registration} />
+                <Row label="Hypothecation Addition" value={rto.hypothecation_addition} />
+                <Row label="Duplicate Tax Card" value={rto.duplicate_tax_card} />
+                <Row label="MV Tax" value={rto.mv_tax} />
+                <Row label="Surcharge on MV Tax" value={rto.surcharge_mv_tax} />
+                <Row 
+                  label="Green Tax" 
+                  value={rto.green_tax} 
+                />
+                <Row
+                  label="Rebate / Waiver"
+                  value={rto.rebate_waiver}
+                  highlight="green"
+                />
+              </div>
+
+              <div className="flex justify-between font-bold text-lg mt-4">
+                <span>Total</span>
+                <span>₹{total}</span>
+              </div>
+
+              <button
+                onClick={() => handleSelectRTO(rto)}
+                className="mt-4 bg-blue-600 hover:bg-blue-700 text-white w-full py-2 rounded-xl font-medium"
+              >
+                Select & Continue
+              </button>
+            </div>
+          );
+        })}
+
+        {/* ✅ Transfer Card (unchanged except green_tax presence) */}
+        <div
+          className={`bg-white rounded-xl shadow-md hover:shadow-xl transition p-6 flex flex-col justify-between min-h-[350px] border-2 ${
+            selectedRegType === "Transfer"
+              ? "border-blue-600"
+              : "border-transparent"
+          }`}
+        >
+          <h2 className="text-xl font-semibold mb-4">Transfer</h2>
+
+          <div className="space-y-1 text-sm font-medium text-gray-700 flex-1">
+            <Row label="Transfer Charge" value={TRANSFER_CHARGE} />
           </div>
-        ))}
+
+          <div className="flex justify-between font-bold text-lg mt-4">
+            <span>Total</span>
+            <span>₹{TRANSFER_CHARGE}</span>
+          </div>
+
+          <button
+            onClick={handleSelectTransfer}
+            className="mt-4 bg-blue-600 hover:bg-blue-700 text-white w-full py-2 rounded-xl font-medium"
+          >
+            Select & Continue
+          </button>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function Row({ label, value, highlight }) {
+  return (
+    <div
+      className={`flex justify-between ${
+        highlight === "green"
+          ? "text-green-700 font-medium"
+          : highlight === "red"
+          ? "text-red-700 font-medium"
+          : ""
+      }`}
+    >
+      <span>{label}</span>
+      <span>{value ? `₹${value}` : "–"}</span>
     </div>
   );
 }

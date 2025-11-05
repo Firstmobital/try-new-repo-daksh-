@@ -118,6 +118,7 @@ export async function getRtoBreakdown(variantId) {
       duplicate_tax_card,
       mv_tax,
       surcharge_mv_tax,
+      green_tax,
       rebate_waiver
     `)
     .eq("variant_id", variantId);
